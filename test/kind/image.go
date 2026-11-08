@@ -5,13 +5,13 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 
-	"k8s.io/klog/v2"
 	"sigs.k8s.io/kind/pkg/cluster/nodeutils"
 )
 
@@ -79,7 +79,7 @@ func (k *Kind) LoadAuditWebhook() error {
 }
 
 func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraBuildArgs ...string) error {
-	klog.Infof("kind: building %q", mainPath)
+	slog.Info("kind: building", slog.String("main", mainPath))
 
 	if err := os.MkdirAll(filepath.Dir(binPath), 0755); err != nil {
 		return err
@@ -104,7 +104,7 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraB
 	defer os.RemoveAll(tmpDir)
 
 	imageArchive := filepath.Join(tmpDir, fmt.Sprintf("%s-e2e.tar", image))
-	klog.Infof("kind: saving image to archive %q", imageArchive)
+	slog.Info("kind: saving image to archive", slog.String("archive", imageArchive))
 
 	err = k.runCmd("docker", "save", "--output="+imageArchive, image)
 	if err != nil {
@@ -122,7 +122,7 @@ func (k *Kind) loadImage(binPath, mainPath, image, dockerfilePath string, extraB
 	}
 
 	for _, node := range nodes {
-		klog.Infof("kind: loading image %q to node %q", image, node.String())
+		slog.Info("kind: loading image to node", slog.String("image", image), slog.String("node", node.String()))
 		r := bytes.NewBuffer(b)
 		if err := nodeutils.LoadImageArchive(node, r); err != nil {
 			return err
@@ -143,7 +143,7 @@ func (k *Kind) runCmd(command string, args ...string) error {
 }
 
 func (k *Kind) runCmdWithOut(w io.Writer, command string, args ...string) error {
-	klog.Infof("kind: running command '%s %s'", command, strings.Join(args, " "))
+	slog.Info("kind: running command", slog.String("command", command), slog.String("args", strings.Join(args, " ")))
 	cmd := exec.Command(command, args...)
 
 	cmd.Stderr = os.Stderr
