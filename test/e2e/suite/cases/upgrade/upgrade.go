@@ -3,7 +3,6 @@ package upgrade
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -28,7 +27,6 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth/oidc"
 
 	"github.com/rafpe/kube-oidc-proxy/test/e2e/framework"
-	"github.com/rafpe/kube-oidc-proxy/test/util/idtoken"
 	"github.com/rafpe/kube-oidc-proxy/test/util/port"
 )
 
@@ -41,11 +39,11 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 	f := framework.NewOrderedDefaultFramework("upgrade")
 
 	var pod *corev1.Pod
-	BeforeAll(func() {
+	BeforeAll(func(ctx SpecContext) {
 		By("Deploying echo server to exec to")
 
 		var err error
-		pod, err = f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).Create(context.TODO(), &corev1.Pod{
+		pod, err = f.Helper().KubeClient.CoreV1().Pods(f.Namespace.Name).Create(ctx, &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "echoserver-",
 			},
@@ -61,11 +59,11 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		}, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
-		err = f.Helper().WaitForPodReady(f.Namespace.Name, pod.Name, time.Second*30)
+		err = f.Helper().WaitForPodReady(ctx, f.Namespace.Name, pod.Name, time.Second*30)
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Creating Role")
-		_, err = f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(context.TODO(), &rbacv1.Role{
+		_, err = f.Helper().KubeClient.RbacV1().Roles(f.Namespace.Name).Create(ctx, &rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "e2e-test-exec",
 			},
@@ -84,7 +82,7 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Creating RoleBinding")
-		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(context.TODO(),
+		_, err = f.Helper().KubeClient.RbacV1().RoleBindings(f.Namespace.Name).Create(ctx,
 			&rbacv1.RoleBinding{
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "e2e-test-exec",
@@ -103,7 +101,7 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should be able to exec into pod through the proxy", func() {
+	It("should be able to exec into pod through the proxy", func(ctx SpecContext) {
 		restConfig := newRestConfig(f)
 
 		restClient, err := rest.RESTClientFor(restConfig)
@@ -139,7 +137,7 @@ var _ = framework.CasesDescribe("Upgrade", Ordered, ContinueOnFailure, Label("sh
 		}
 
 		By("Running exec into pod and runing curl on local host")
-		err = exec.StreamWithContext(context.Background(), sopt)
+		err = exec.StreamWithContext(ctx, sopt)
 		Expect(err).NotTo(HaveOccurred())
 
 		// should have no stderr output
@@ -265,17 +263,13 @@ func forwardPorts(method string, url *url.URL, opts *portForwardOptions) error {
 }
 
 func newRestConfig(f *framework.Framework) *rest.Config {
-	payload := idtoken.NewPayload(f.IssuerURL(), f.ClientID(), time.Now().Add(time.Minute))
-	signedToken, err := idtoken.Sign(f.IssuerKeyBundle(), payload)
-	Expect(err).NotTo(HaveOccurred())
-
 	return &rest.Config{
 		Host: f.ProxyURL().Host,
 		AuthProvider: &clientcmdapi.AuthProviderConfig{
 			Name: "oidc",
 			Config: map[string]string{
 				"client-id":      f.ClientID(),
-				"id-token":       signedToken,
+				"id-token":       f.SignedToken(),
 				"idp-issuer-url": f.IssuerURL().String(),
 			},
 		},

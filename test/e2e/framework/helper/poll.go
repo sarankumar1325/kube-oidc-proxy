@@ -12,17 +12,18 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	discoveryv1 "k8s.io/api/discovery/v1"
 	k8sErrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
+
+	"github.com/rafpe/kube-oidc-proxy/test/util/appdeploy"
 )
 
-func (h *Helper) WaitForDeploymentReady(namespace, name string, timeout time.Duration) error {
+func (h *Helper) WaitForDeploymentReady(ctx context.Context, namespace, name string, timeout time.Duration) error {
 	slog.Info("helper: waiting for deployment to become ready", slog.String("namespace", namespace), slog.String("name", name))
 
-	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
-		return h.deploymentReady(ctx, namespace, name)
+	err := wait.PollUntilContextTimeout(ctx, time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
+		return h.DeploymentReady(ctx, namespace, name)
 	})
 
 	if err != nil {
@@ -40,47 +41,19 @@ func (h *Helper) WaitForDeploymentReady(namespace, name string, timeout time.Dur
 // DeploymentReady reports whether every desired replica of the Deployment is
 // ready right now, for checks that the state holds over time rather than that
 // it is eventually reached.
-func (h *Helper) DeploymentReady(namespace, name string) (bool, error) {
-	return h.deploymentReady(context.TODO(), namespace, name)
-}
-
-func (h *Helper) deploymentReady(ctx context.Context, namespace, name string) (bool, error) {
-	deploy, err := h.KubeClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		return false, err
-	}
-
-	if deploy.Spec.Replicas == nil {
-		return false, nil
-	}
-
-	return *deploy.Spec.Replicas == deploy.Status.ReadyReplicas, nil
+func (h *Helper) DeploymentReady(ctx context.Context, namespace, name string) (bool, error) {
+	return appdeploy.DeploymentReady(ctx, h.KubeClient, namespace, name)
 }
 
 // WaitForServiceEndpoints waits until the Service has at least one ready
 // endpoint, which is when its cluster DNS name starts routing to a pod. A ready
 // Deployment alone does not mean that: the EndpointSlice controller publishes
 // the pod as an endpoint asynchronously.
-func (h *Helper) WaitForServiceEndpoints(namespace, service string, timeout time.Duration) error {
+func (h *Helper) WaitForServiceEndpoints(ctx context.Context, namespace, service string, timeout time.Duration) error {
 	slog.Info("helper: waiting for service endpoints", slog.String("namespace", namespace), slog.String("name", service))
 
-	err := wait.PollUntilContextTimeout(context.Background(), time.Second, timeout, true, func(ctx context.Context) (bool, error) {
-		list, err := h.KubeClient.DiscoveryV1().EndpointSlices(namespace).List(ctx, metav1.ListOptions{
-			LabelSelector: discoveryv1.LabelServiceName + "=" + service,
-		})
-		if err != nil {
-			return false, err
-		}
-
-		for _, slice := range list.Items {
-			for _, ep := range slice.Endpoints {
-				if ep.Conditions.Ready != nil && *ep.Conditions.Ready {
-					return true, nil
-				}
-			}
-		}
-
-		return false, nil
+	err := wait.PollUntilContextTimeout(ctx, time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		return appdeploy.ServiceHasReadyEndpoint(ctx, h.KubeClient, namespace, service)
 	})
 	if err != nil {
 		return fmt.Errorf("service %s/%s has no ready endpoint: %w", namespace, service, err)
@@ -93,7 +66,7 @@ func (h *Helper) WaitForServiceEndpoints(namespace, service string, timeout time
 // bare TCP dial is not enough for a port kind maps to the host: Docker's proxy
 // accepts the connection whether or not anything behind it is serving. The
 // certificate is not verified; this only checks that the server answers.
-func (h *Helper) WaitForTLSHandshake(u *url.URL, timeout time.Duration) error {
+func (h *Helper) WaitForTLSHandshake(ctx context.Context, u *url.URL, timeout time.Duration) error {
 	slog.Info("helper: waiting for TLS handshake", slog.String("url", u.String()))
 
 	dialer := &tls.Dialer{
@@ -102,7 +75,7 @@ func (h *Helper) WaitForTLSHandshake(u *url.URL, timeout time.Duration) error {
 	}
 
 	var lastErr error
-	err := wait.PollUntilContextTimeout(context.Background(), time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextTimeout(ctx, time.Second, timeout, true, func(ctx context.Context) (bool, error) {
 		conn, err := dialer.DialContext(ctx, "tcp", u.Host)
 		if err != nil {
 			lastErr = err
@@ -118,10 +91,10 @@ func (h *Helper) WaitForTLSHandshake(u *url.URL, timeout time.Duration) error {
 	return nil
 }
 
-func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) error {
+func (h *Helper) WaitForPodReady(ctx context.Context, namespace, name string, timeout time.Duration) error {
 	slog.Info("helper: waiting for pod to become ready", slog.String("namespace", namespace), slog.String("name", name))
 
-	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextTimeout(ctx, time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		pod, err := h.KubeClient.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			return false, err
@@ -160,10 +133,10 @@ func (h *Helper) WaitForPodReady(namespace, name string, timeout time.Duration) 
 	return nil
 }
 
-func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.Duration) error {
+func (h *Helper) WaitForDeploymentToDelete(ctx context.Context, namespace, name string, timeout time.Duration) error {
 	slog.Info("helper: waiting for deployment to be deleted", slog.String("namespace", namespace), slog.String("name", name))
 
-	err := wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
+	err := wait.PollUntilContextTimeout(ctx, time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		_, err := h.KubeClient.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
 		if k8sErrors.IsNotFound(err) {
 			slog.Info("helper: deployment deleted, waiting for pods", slog.String("namespace", namespace), slog.String("name", name))
@@ -203,10 +176,10 @@ func (h *Helper) WaitForDeploymentToDelete(namespace, name string, timeout time.
 	return nil
 }
 
-func (h *Helper) WaitForURLToBeReady(url *url.URL, timeout time.Duration) error {
+func (h *Helper) WaitForURLToBeReady(ctx context.Context, url *url.URL, timeout time.Duration) error {
 	slog.Info("helper: waiting for URL to be ready", slog.String("url", url.String()))
 
-	return wait.PollUntilContextTimeout(context.Background(), time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
+	return wait.PollUntilContextTimeout(ctx, time.Second*2, timeout, true, func(ctx context.Context) (bool, error) {
 		host := url.Host
 		port := url.Port()
 		tocheck := host
